@@ -25,6 +25,8 @@ steps:
       - '--region'
       - '$_REGION'
       - '--allow-unauthenticated'
+      - '--service-account'
+      - '$_RUN_SERVICE_ACCOUNT'
       # -- 平文の環境変数の設定 --
       # APP_PUBLIC_URLはCloud Runの払い出しURL（またはカスタムドメイン）を指定する
       - '--set-env-vars'
