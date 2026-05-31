@@ -12,7 +12,12 @@ class YouTubeService:
         """
         RSSを取得し、新着動画があればDiscordに通知する
         """
-        rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={youtube_channel_id}"
+        # Live配信専用のプレイリストとしてRSSを取得
+        if youtube_channel_id.startswith("UC"):
+            live_playlist_id = "UULV" + youtube_channel_id[2:]
+            rss_url = f"https://www.youtube.com/feeds/videos.xml?playlist_id={live_playlist_id}"
+        else:
+            rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={youtube_channel_id}"
 
         async with httpx.AsyncClient() as client:
             try:
