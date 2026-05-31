@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 import logging
 
-from app.api.routers import discord, twitch, youtube
+from app.api.routers import discord, twitch, youtube, finops
 from app.core.config import settings
 
 # 仮のロガー設定
@@ -17,6 +17,7 @@ app = FastAPI()
 app.include_router(discord.router, prefix="/api/discord", tags=["Discord"])
 app.include_router(twitch.router, prefix="/api/twitch", tags=["Twitch"])
 app.include_router(youtube.router, prefix="/api/youtube", tags=["YouTube"])
+app.include_router(finops.router, prefix="/api/finops", tags=["Finops"])
 
 
 @app.get("/", tags=["System"])

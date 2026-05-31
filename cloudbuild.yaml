@@ -31,6 +31,8 @@ steps:
       # APP_PUBLIC_URLはCloud Runの払い出しURL（またはカスタムドメイン）を指定する
       - '--set-env-vars'
       - 'APP_PUBLIC_URL=$_APP_PUBLIC_URL'
+      - 'FINOPS_BQ_DATASET=$_FINOPS_BQ_DATASET'
+      - 'FINOPS_BQ_TABLE=$_FINOPS_BQ_TABLE'
       # -- シークレットの注入 (Secret Managerからのマッピング) --
       # フォーマット: 環境変数名=SecretManagerのシークレット名:バージョン
       - '--set-secrets'
@@ -39,6 +41,7 @@ steps:
         DISCORD_PUBLIC_KEY=LUCA_DISCORD_PUBLIC_KEY:latest,
         DISCORD_BOT_TOKEN=LUCA_DISCORD_BOT_TOKEN:latest,
         DISCORD_STREAMING_CHANNEL_ID=LUCA_DISCORD_STREAMING_CHANNEL_ID:latest,
+        DISCORD_FINOPS_CHANNEL_ID=LUCA_DISCORD_FINOPS_CHANNEL_ID:latest,
         TWITCH_CLIENT_ID=LUCA_TWITCH_CLIENT_ID:latest,
         TWITCH_CLIENT_SECRET=LUCA_TWITCH_CLIENT_SECRET:latest,
         TWITCH_WEBHOOK_SECRET=LUCA_TWITCH_WEBHOOK_SECRET:latest,

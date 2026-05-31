@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     # YouTube (Cron) 関連
     CRON_SECRET: str
 
+    # FinOps (GCS / BigQuery) 関連
+    PROJECT_ID: str
+    FINOPS_BQ_DATASET: str
+    FINOPS_BQ_TABLE: str
+    DISCORD_FINOPS_CHANNEL_ID: str
+
     # Pydantic Settingsの設定（.envファイルからの読み込みを有効化）
     model_config = SettingsConfigDict(
         env_file=".env",

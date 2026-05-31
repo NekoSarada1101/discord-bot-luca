@@ -1,7 +1,9 @@
 {
     "specstory.cloudSync.enabled": "never",
     "cSpell.words": [
+        "eventarc",
         "eventsub",
+        "finops",
         "luca"
     ]
 }
