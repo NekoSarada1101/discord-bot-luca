@@ -1,0 +1,6 @@
+.specstory
+__pycache__
+venv
+test_webhooks.py
+register_commands.py
+.env

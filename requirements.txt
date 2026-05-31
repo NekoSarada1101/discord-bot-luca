@@ -1,0 +1,8 @@
+fastapi
+feedparser
+google-cloud-firestore
+httpx
+pydantic-settings
+pynacl
+requests
+uvicorn
