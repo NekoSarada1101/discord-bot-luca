@@ -29,7 +29,7 @@ class FinOpsService:
             storage_client = storage.Client(project=settings.PROJECT_ID)
             bucket = storage_client.bucket(bucket_name)
             blob = bucket.blob(file_name)
-            csv_data = blob.download_as_text(encoding="utf-8")
+            csv_data = blob.download_as_text(encoding="utf-8-sig")
 
             rows_to_insert = []
             reader = csv.DictReader(io.StringIO(csv_data))
