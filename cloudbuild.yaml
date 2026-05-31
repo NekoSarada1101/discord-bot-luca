@@ -30,9 +30,7 @@ steps:
       # -- 平文の環境変数の設定 --
       # APP_PUBLIC_URLはCloud Runの払い出しURL（またはカスタムドメイン）を指定する
       - '--set-env-vars'
-      - 'APP_PUBLIC_URL=$_APP_PUBLIC_URL'
-      - 'FINOPS_BQ_DATASET=$_FINOPS_BQ_DATASET'
-      - 'FINOPS_BQ_TABLE=$_FINOPS_BQ_TABLE'
+      - 'APP_PUBLIC_URL=$_APP_PUBLIC_URL,FINOPS_BQ_DATASET=$_FINOPS_BQ_DATASET,FINOPS_BQ_TABLE=$_FINOPS_BQ_TABLE,PROJECT_ID=$_PROJECT_ID'
       # -- シークレットの注入 (Secret Managerからのマッピング) --
       # フォーマット: 環境変数名=SecretManagerのシークレット名:バージョン
       - '--set-secrets'
