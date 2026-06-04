@@ -2,3 +2,5 @@
 from .definitions import system
 from .definitions import twitch_commands
 from .definitions import youtube_commands
+from .definitions import finops_commands
+

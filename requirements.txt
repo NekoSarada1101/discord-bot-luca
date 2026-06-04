@@ -8,3 +8,4 @@ pydantic-settings
 pynacl
 requests
 uvicorn
+google-generativeai

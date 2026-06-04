@@ -30,7 +30,7 @@ steps:
       # -- 平文の環境変数の設定 --
       # APP_PUBLIC_URLはCloud Runの払い出しURL（またはカスタムドメイン）を指定する
       - '--set-env-vars'
-      - 'APP_PUBLIC_URL=$_APP_PUBLIC_URL,FINOPS_BQ_DATASET=$_FINOPS_BQ_DATASET,FINOPS_BQ_TABLE=$_FINOPS_BQ_TABLE,PROJECT_ID=$_PROJECT_ID'
+      - 'APP_PUBLIC_URL=$_APP_PUBLIC_URL,FINOPS_BQ_DATASET=$_FINOPS_BQ_DATASET,ENEOS_BQ_TABLE=$_ENEOS_BQ_TABLE,PC_POWER_BQ_TABLE=$_PC_POWER_BQ_TABLE,PROJECT_ID=$_PROJECT_ID'
       # -- シークレットの注入 (Secret Managerからのマッピング) --
       # フォーマット: 環境変数名=SecretManagerのシークレット名:バージョン
       - '--set-secrets'
@@ -44,6 +44,8 @@ steps:
         TWITCH_CLIENT_SECRET=LUCA_TWITCH_CLIENT_SECRET:latest,
         TWITCH_WEBHOOK_SECRET=LUCA_TWITCH_WEBHOOK_SECRET:latest,
         CRON_SECRET=LUCA_CRON_SECRET:latest
+        GEMINI_API_KEY=LUCA_GEMINI_API_KEY:latest,
+        
 
 images:
   - '$_REGION-docker.pkg.dev/$PROJECT_ID/$_AR_REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA'

@@ -1,7 +1,8 @@
 import logging
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
 
+from app.core.config import settings
 from app.services.finops_service import finops_service
 
 logger = logging.getLogger(__name__)
@@ -35,3 +36,19 @@ async def handle_gcs_event(request: Request, background_tasks: BackgroundTasks):
     )
 
     return {"status": "accepted", "message": "ETL pipeline triggered."}
+
+
+@router.get("/cron")
+async def finops_cron(background_tasks: BackgroundTasks, authorization: str = Header(None)):
+    """
+    週次でFinOps監査を実行し、結果をDiscordへ通知するCron用エンドポイント
+    """
+    if authorization != f"Bearer {settings.CRON_SECRET}":
+        raise HTTPException(status_code=403, detail="Unauthorized cron request")
+
+    background_tasks.add_task(
+        finops_service.perform_weekly_audit
+    )
+
+    return {"status": "accepted", "message": "FinOps weekly audit triggered."}
+

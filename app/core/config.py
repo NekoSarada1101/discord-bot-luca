@@ -23,8 +23,11 @@ class Settings(BaseSettings):
     # FinOps (GCS / BigQuery) 関連
     PROJECT_ID: str
     FINOPS_BQ_DATASET: str
-    FINOPS_BQ_TABLE: str
+    ENEOS_BQ_TABLE: str
+    PC_POWER_BQ_TABLE: str
     DISCORD_FINOPS_CHANNEL_ID: str
+    GEMINI_API_KEY: str
+    ELECTRICITY_UNIT_PRICE: float = 35.0
 
     # Pydantic Settingsの設定（.envファイルからの読み込みを有効化）
     model_config = SettingsConfigDict(

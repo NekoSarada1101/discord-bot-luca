@@ -4,3 +4,4 @@ venv
 test_webhooks.py
 register_commands.py
 .env
+credentials.json
