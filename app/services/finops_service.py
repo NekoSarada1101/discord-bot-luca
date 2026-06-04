@@ -96,7 +96,7 @@ class FinOpsService:
                 settings.DISCORD_FINOPS_CHANNEL_ID, error_msg
             )
 
-    async def get_weekly_power_data(self, days: int = 3) -> dict:
+    async def get_weekly_power_data(self, days: int = 7) -> dict:
         """
         BigQueryからPC消費電力(15分値)と家庭消費電力量(30分値)を取得・結合し、
         相関分析・ベースロード推定等の集計結果を返す。
