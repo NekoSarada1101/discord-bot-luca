@@ -142,7 +142,7 @@ class FinOpsService:
             usage_kwh AS household_kwh
           FROM (
             SELECT
-              TIMESTAMP_SUB(timestamp, INTERVAL 9 HOUR) AS time_30m,
+              timestamp AS time_30m,
               usage_kwh
             FROM
               `{household_table_id}`
