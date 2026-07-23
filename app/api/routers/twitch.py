@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Request, Depends, Response
 from app.core.security import verify_twitch_signature
 from app.core.config import settings
 from app.services.discord_service import discord_service
+from app.services.twitch_service import twitch_service
 import logging
 
 logger = logging.getLogger(__name__)
@@ -30,7 +31,19 @@ async def twitch_eventsub(request: Request):
 
         if event_type == "stream.online":
             twitch_url = f"https://twitch.tv/{event_data.get('broadcaster_user_login')}"
-            message_content = f"💜 **{broadcaster_name}** がTwitchで配信を開始しました！\n{twitch_url}"
+
+            # stream.onlineイベントには配信タイトル・ゲーム名が含まれないため、別途APIで取得する
+            stream_info = await twitch_service.get_stream_info(event_data.get("broadcaster_user_id"))
+            stream_title = stream_info.get("title") if stream_info else None
+            game_name = stream_info.get("game_name") if stream_info else None
+
+            lines = [f"💜 **{broadcaster_name}** がTwitchで配信を開始しました！"]
+            if stream_title:
+                lines.append(f"📝 配信タイトル: {stream_title}")
+            if game_name:
+                lines.append(f"🎮 ゲーム: {game_name}")
+            lines.append(twitch_url)
+            message_content = "\n".join(lines)
 
             success = await discord_service.send_message(
                 channel_id=settings.DISCORD_STREAMING_CHANNEL_ID,

@@ -36,13 +36,20 @@ class YouTubeService:
         latest_video_id = latest_entry.yt_videoid
         video_title = latest_entry.title
         video_url = latest_entry.link
+        # チャンネル名はエントリーのauthor、なければフィード全体のtitleを使う
+        channel_name = getattr(latest_entry, "author", None) or feed.feed.get("title")
 
         # Firestoreから前回のIDを取得
         last_id = await state_service.get_last_video_id(youtube_channel_id)
 
         if latest_video_id != last_id:
             # 新着（または初回実行）の場合のみ通知
-            message = f"🔴 **YouTube新着通知**\n**{video_title}**\n{video_url}"
+            lines = ["🔴 **YouTube新着通知**"]
+            if channel_name:
+                lines.append(f"📺 チャンネル: {channel_name}")
+            lines.append(f"📝 配信タイトル: {video_title}")
+            lines.append(video_url)
+            message = "\n".join(lines)
             success = await discord_service.send_message(discord_channel_id, message)
 
             if success:

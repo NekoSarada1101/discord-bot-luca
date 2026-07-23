@@ -100,6 +100,20 @@ class TwitchService:
         logger.error(f"バルクユーザー取得失敗: {response.text}")
         return {}
 
+    async def get_stream_info(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """
+        配信中のユーザーIDから、配信タイトルやゲームタイトルなどの情報を取得する。
+        stream.onlineイベントのペイロードにはこれらの情報が含まれないため、別途取得する必要がある。
+        """
+        response = await self._make_request("GET", f"/streams?user_id={user_id}")
+
+        if response.status_code == 200:
+            data = response.json().get("data", [])
+            return data[0] if data else None
+
+        logger.warning(f"配信情報の取得に失敗した (UserID: {user_id})")
+        return None
+
     async def create_eventsub_subscription(self, user_id: str) -> bool:
         """
         特定のユーザーIDに対する stream.online イベントのWebhook購読を登録する。
