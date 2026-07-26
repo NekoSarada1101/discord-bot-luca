@@ -5,8 +5,8 @@ import logging
 import zoneinfo
 from datetime import datetime, timezone
 
+from google import genai
 from google.cloud import bigquery, storage
-import google.generativeai as genai
 
 from app.core.config import settings
 from app.services.discord_service import discord_service
@@ -284,7 +284,7 @@ class FinOpsService:
         """
         集計結果データをもとに、Gemini APIを呼び出して週次FinOps監査レポートを生成する。
         """
-        genai.configure(api_key=settings.GEMINI_API_KEY)
+        client = genai.Client(api_key=settings.GEMINI_API_KEY)
         unit_price = settings.ELECTRICITY_UNIT_PRICE
         
         total_house_kwh = data.get("total_household_kwh") or 0.0
@@ -359,10 +359,9 @@ class FinOpsService:
 - Discordの1メッセージの制限（2000文字）に絶対に収まるように、要点を簡潔にまとめて1500〜1800文字程度にしてください。
 """
 
-        model = genai.GenerativeModel("gemini-2.5-flash")
-        response = await asyncio.to_thread(
-            model.generate_content,
-            prompt
+        response = await client.aio.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
         )
         return response.text
 
