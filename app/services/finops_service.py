@@ -128,9 +128,7 @@ class FinOpsService:
         pc_pivot AS (
           SELECT
             time_30m,
-            SUM(pc_kwh) AS pc_total_kwh,
-            SUM(CASE WHEN hostname = 'main-pc' THEN pc_kwh ELSE 0.0 END) AS main_pc_kwh,
-            SUM(CASE WHEN hostname = 'sub-pc' THEN pc_kwh ELSE 0.0 END) AS sub_pc_kwh
+            SUM(pc_kwh) AS pc_total_kwh
           FROM
             pc_30m
           GROUP BY
@@ -151,13 +149,22 @@ class FinOpsService:
             time_30m >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @days DAY)
         ),
 
+        pc_by_host AS (
+          SELECT
+            p.hostname,
+            SUM(p.pc_kwh) AS host_kwh
+          FROM
+            pc_30m p
+          INNER JOIN
+            household_30m h ON p.time_30m = h.time_30m
+          GROUP BY
+            p.hostname
+        ),
         joined_data AS (
           SELECT
             h.time_30m,
             h.household_kwh,
             COALESCE(p.pc_total_kwh, 0.0) AS pc_total_kwh,
-            COALESCE(p.main_pc_kwh, 0.0) AS main_pc_kwh,
-            COALESCE(p.sub_pc_kwh, 0.0) AS sub_pc_kwh,
             GREATEST(0.0, h.household_kwh - COALESCE(p.pc_total_kwh, 0.0)) AS non_pc_kwh
           FROM
             household_30m h
@@ -206,8 +213,6 @@ class FinOpsService:
         SELECT
           SUM(household_kwh) AS total_household_kwh,
           SUM(pc_total_kwh) AS total_pc_kwh,
-          SUM(main_pc_kwh) AS total_main_pc_kwh,
-          SUM(sub_pc_kwh) AS total_sub_pc_kwh,
           SUM(non_pc_kwh) AS total_non_pc_kwh,
           SUM(estimated_baseload) AS total_baseload_kwh,
           SUM(active_appliances_kwh) AS total_active_appliances_kwh,
@@ -216,6 +221,7 @@ class FinOpsService:
           ANY_VALUE(estimated_baseload) AS single_baseload_kwh,
           CORR(pc_total_kwh, active_appliances_kwh) AS correlation_pc_vs_active,
           CORR(pc_total_kwh, household_kwh) AS correlation_pc_vs_household,
+          (SELECT ARRAY_AGG(STRUCT(hostname, host_kwh) ORDER BY host_kwh DESC) FROM pc_by_host) AS pc_host_stats,
           (SELECT ARRAY_AGG(STRUCT(date_jst, daily_household_kwh, daily_pc_kwh, daily_active_kwh) ORDER BY date_jst ASC) FROM daily_summary) AS daily_stats,
           (SELECT ARRAY_AGG(STRUCT(hour_jst, hourly_household_kwh, hourly_pc_kwh, hourly_active_kwh) ORDER BY hour_jst ASC) FROM hourly_summary) AS hourly_stats
         FROM
@@ -274,6 +280,10 @@ class FinOpsService:
             "  PCについては稼働継続を前提に、電力効率（ワットあたり演算性能）を高める方向"
             "（CPU/GPUの電力制限・アンダーボルト、BOINCの使用CPUコア数や実行率の調整、"
             "電気代の安い時間帯へのタスク寄せ、排熱処理の改善など）で提案すること。\n"
+            "- PCは複数台あり、ホスト名別の内訳を提示しているが、**集計対象のPCはすべてBOINCを24時間稼働させている**。\n"
+            "  したがって、どのマシンについても深夜・不在時に消費電力が高いのは正常な状態である。"
+            "特定のマシンだけを「アイドル状態で無駄」「使っていないのに動いている」と判定してはならず、"
+            "ホスト別の消費電力差は用途・構成・性能の違いによるものとして扱うこと。\n"
             f"{season_context}\n"
             "- 上記の前提を踏まえ、「無駄」と「意図的な固定コスト」を明確に区別して分析すること。\n"
             "  意図的な固定コストについては削減対象とせず、その金額を『納得して支払っているコスト』として"
@@ -289,21 +299,29 @@ class FinOpsService:
         
         total_house_kwh = data.get("total_household_kwh") or 0.0
         total_pc_kwh = data.get("total_pc_kwh") or 0.0
-        total_main_pc_kwh = data.get("total_main_pc_kwh") or 0.0
-        total_sub_pc_kwh = data.get("total_sub_pc_kwh") or 0.0
         total_baseload_kwh = data.get("total_baseload_kwh") or 0.0
         total_active_kwh = data.get("total_active_appliances_kwh") or 0.0
-        
+
         cost_house = total_house_kwh * unit_price
         cost_pc = total_pc_kwh * unit_price
-        cost_main = total_main_pc_kwh * unit_price
-        cost_sub = total_sub_pc_kwh * unit_price
         cost_baseload = total_baseload_kwh * unit_price
         cost_active = total_active_kwh * unit_price
-        
+
         corr_active = data.get("correlation_pc_vs_active")
         corr_house = data.get("correlation_pc_vs_household")
-        
+
+        # PCはホスト名別に動的集計する（マシンの増減や改名でも壊れないようにするため）
+        pc_host_stats_str = ""
+        for host in (data.get("pc_host_stats") or []):
+            host_kwh = host["host_kwh"] or 0.0
+            share = host_kwh / total_pc_kwh * 100 if total_pc_kwh > 0 else 0
+            pc_host_stats_str += (
+                f"  - {host['hostname']}: {host_kwh:.2f} kWh "
+                f"(推定電気代: {host_kwh * unit_price:,.0f} 円、PC合計の {share:.1f}%)\n"
+            )
+        if not pc_host_stats_str:
+            pc_host_stats_str = "  - (ホスト別の内訳データなし)\n"
+
         daily_stats_str = ""
         for day in (data.get("daily_stats") or []):
             daily_stats_str += f"- {day['date_jst']}: 家庭全体 {day['daily_household_kwh']:.2f} kWh, PC {day['daily_pc_kwh']:.2f} kWh, 空調/アクティブ {day['daily_active_kwh']:.2f} kWh\n"
@@ -322,8 +340,7 @@ class FinOpsService:
 ### 集計データ（直近 {days} 日間）
 - 家庭全体消費電力量: {total_house_kwh:.2f} kWh (推定電気代: {cost_house:,.0f} 円)
 - PC全体の総消費電力量: {total_pc_kwh:.2f} kWh (推定電気代: {cost_pc:,.0f} 円、全体の {total_pc_kwh/total_house_kwh*100 if total_house_kwh > 0 else 0:.1f}%)
-  - メインPC (main-pc): {total_main_pc_kwh:.2f} kWh (推定電気代: {cost_main:,.0f} 円)
-  - サブPC (sub-pc): {total_sub_pc_kwh:.2f} kWh (推定電気代: {cost_sub:,.0f} 円)
+{pc_host_stats_str}
 - 推定ベースロード（冷蔵庫・待機電力など。15%値ベースの推計値）: {total_baseload_kwh:.2f} kWh (推定電気代: {cost_baseload:,.0f} 円)
 - 推定空調・アクティブ家電消費電力（ベースロード超過分）: {total_active_kwh:.2f} kWh (推定電気代: {cost_active:,.0f} 円)
 
@@ -340,6 +357,7 @@ class FinOpsService:
 ### レポートの要件：
 1. **エグゼクティブサマリー**:
    - 今週の総電気料金の内訳を、「意図的な固定コスト（BOINCの24時間稼働、季節上必要な空調）」と「改善余地のあるコスト」に切り分けて総括してください。
+   - PCについては合計値だけでなく、提示されたホスト名別の内訳（各マシンのkWhと電気代）も必ず表に含めてください。どのマシンがBOINC稼働のコストをどれだけ占めているかを可視化することが目的です。
 2. **PCと空調の相関分析**:
    - 相関係数の値をもとに、PCの負荷（および排熱）がエアコンの消費電力に与えた影響を統計的・論理的に解説してください。
    - 相関係数が高い（例えば0.4以上）場合はPC排熱によるエアコン負荷への影響を指摘し、低い場合は別の主要因（時間帯や人間の活動など）が支配的であることを指摘してください。
@@ -356,11 +374,18 @@ class FinOpsService:
 ### フォーマットガイドライン：
 - Discord上に投稿するのに適した、見出し、箇条書き、表、絵文字（💡, 💻, ❄️, 💸, 📈など）を効果的に使った視覚的に美しいマークダウン形式にしてください。
 - 読者がすぐに理解でき、モチベーションが高まるトーン（事実に基づきつつ建設的で親しみやすいトーン）にしてください。
-- Discordの1メッセージの制限（2000文字）に絶対に収まるように、要点を簡潔にまとめて1500〜1800文字程度にしてください。
+- 分量は以下の構造を厳守してください（Discordでは2000文字ごとに自動分割されるため、全体で3800文字を超えないこと）。
+  - 前置き・自己紹介・締めの挨拶は書かず、いきなり本題（セクション1）から始める。
+  - セクション1（サマリー）: コスト内訳の表1つ ＋ 補足2文以内。
+  - セクション2（相関分析）: 相関係数の提示 ＋ 解説3文以内。
+  - セクション3（パターン分析）: 箇条書き4項目以内、各項目2文以内。
+  - セクション4（アクションプラン）: 4個以内。各プランは「施策」「根拠」「期待削減額」の3行のみで書き、それ以上の説明を足さない。
+  - アクションプランの再掲表や、末尾の合計表・総括文は作らない（同じ数値を2度提示しない）。
+- 冗長な修飾・比喩・励ましの言い回しを削り、数値と根拠を優先してください。
 """
 
         response = await client.aio.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
             contents=prompt,
         )
         return response.text
