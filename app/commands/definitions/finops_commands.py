@@ -1,5 +1,6 @@
 import logging
 from app.commands.handler import command_handler
+from app.core.config import settings
 from app.services.finops_service import finops_service
 
 logger = logging.getLogger(__name__)
@@ -36,9 +37,17 @@ async def _handle_audit(subcommand: dict) -> dict:
         return _error_response("日数は1日から30日の間で指定してください。")
 
     try:
-        # 監査の実行とレポート生成
-        report = await finops_service.perform_weekly_audit(days=days)
-        return {"type": 4, "data": {"content": report}}
+        # 監査の実行とレポート生成。レポート本文はFinOpsチャンネルへ直接投稿される
+        await finops_service.perform_weekly_audit(days=days)
+        return {
+            "type": 4,
+            "data": {
+                "content": (
+                    f"✅ 直近 {days} 日間のFinOps監査レポートを "
+                    f"<#{settings.DISCORD_FINOPS_CHANNEL_ID}> に投稿しました。"
+                )
+            },
+        }
     except Exception as e:
         return _error_response(f"FinOps監査の実行中にエラーが発生しました: {e}")
 
