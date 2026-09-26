@@ -14,6 +14,17 @@ from app.services.discord_service import discord_service
 logger = logging.getLogger(__name__)
 
 
+def _struct_value(struct, key: str, default: float = 0.0) -> float:
+    """BigQueryのSTRUCT/Row(またはNone)からフィールドを安全に取り出す。"""
+    if struct is None:
+        return default
+    try:
+        value = struct[key]
+    except (KeyError, TypeError):
+        return default
+    return default if value is None else value
+
+
 class FinOpsService:
     def __init__(self):
         self.jst = zoneinfo.ZoneInfo("Asia/Tokyo")
@@ -98,41 +109,43 @@ class FinOpsService:
 
     async def get_weekly_power_data(self, days: int = 7) -> dict:
         """
-        BigQueryからPC消費電力(15分値)と家庭消費電力量(30分値)を取得・結合し、
-        相関分析・ベースロード推定等の集計結果を返す。
+        BigQueryからPC消費電力(SwitchBot Plug Miniによる壁実測・15分値)と
+        家庭消費電力量(30分値)を取得・結合し、相関分析・ベースロード推定等の集計結果を返す。
+        CPU+GPU推論値(power_metrics)は、実測に対する捕捉率を示す参考値として別途集計する。
         """
+        env_table_id = f"{settings.PROJECT_ID}.{settings.FINOPS_BQ_DATASET}.{settings.PC_ENV_METRICS_BQ_TABLE}"
         pc_table_id = f"{settings.PROJECT_ID}.{settings.FINOPS_BQ_DATASET}.{settings.PC_POWER_BQ_TABLE}"
         household_table_id = f"{settings.PROJECT_ID}.{settings.FINOPS_BQ_DATASET}.{settings.ENEOS_BQ_TABLE}"
 
         query = f"""
-        WITH pc_raw AS (
+        WITH pc_env_raw AS (
           SELECT
             TIMESTAMP_SECONDS(DIV(UNIX_SECONDS(timestamp), 1800) * 1800) AS time_30m,
-            hostname,
-            total_power_w
+            plug_main_pc_w,
+            plug_sub_pc_w
           FROM
-            `{pc_table_id}`
+            `{env_table_id}`
           WHERE
             timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @days DAY)
         ),
-        pc_30m AS (
+        pc_env_30m AS (
           SELECT
             time_30m,
-            hostname,
-            AVG(total_power_w) * 0.5 / 1000.0 AS pc_kwh
+            AVG(plug_main_pc_w) * 0.5 / 1000.0 AS main_pc_kwh,
+            AVG(plug_sub_pc_w) * 0.5 / 1000.0 AS sub_pc_kwh
           FROM
-            pc_raw
+            pc_env_raw
           GROUP BY
-            time_30m, hostname
+            time_30m
         ),
         pc_pivot AS (
           SELECT
             time_30m,
-            SUM(pc_kwh) AS pc_total_kwh
+            COALESCE(main_pc_kwh, 0.0) AS main_pc_kwh,
+            COALESCE(sub_pc_kwh, 0.0) AS sub_pc_kwh,
+            COALESCE(main_pc_kwh, 0.0) + COALESCE(sub_pc_kwh, 0.0) AS pc_total_kwh
           FROM
-            pc_30m
-          GROUP BY
-            time_30m
+            pc_env_30m
         ),
         household_30m AS (
           SELECT
@@ -148,17 +161,14 @@ class FinOpsService:
           WHERE
             time_30m >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @days DAY)
         ),
-
         pc_by_host AS (
           SELECT
-            p.hostname,
-            SUM(p.pc_kwh) AS host_kwh
+            SUM(p.main_pc_kwh) AS main_pc_total_kwh,
+            SUM(p.sub_pc_kwh) AS sub_pc_total_kwh
           FROM
-            pc_30m p
+            pc_pivot p
           INNER JOIN
             household_30m h ON p.time_30m = h.time_30m
-          GROUP BY
-            p.hostname
         ),
         joined_data AS (
           SELECT
@@ -209,6 +219,37 @@ class FinOpsService:
             analyzed_30m
           GROUP BY
             hour_jst
+        ),
+        inferred_raw AS (
+          SELECT
+            TIMESTAMP_SECONDS(DIV(UNIX_SECONDS(timestamp), 1800) * 1800) AS time_30m,
+            hostname,
+            total_power_w
+          FROM
+            `{pc_table_id}`
+          WHERE
+            timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @days DAY)
+        ),
+        inferred_30m AS (
+          SELECT
+            time_30m,
+            hostname,
+            AVG(total_power_w) * 0.5 / 1000.0 AS inferred_kwh
+          FROM
+            inferred_raw
+          GROUP BY
+            time_30m, hostname
+        ),
+        inferred_by_host AS (
+          SELECT
+            i.hostname,
+            SUM(i.inferred_kwh) AS inferred_total_kwh
+          FROM
+            inferred_30m i
+          INNER JOIN
+            household_30m h ON i.time_30m = h.time_30m
+          GROUP BY
+            i.hostname
         )
         SELECT
           SUM(household_kwh) AS total_household_kwh,
@@ -221,7 +262,8 @@ class FinOpsService:
           ANY_VALUE(estimated_baseload) AS single_baseload_kwh,
           CORR(pc_total_kwh, active_appliances_kwh) AS correlation_pc_vs_active,
           CORR(pc_total_kwh, household_kwh) AS correlation_pc_vs_household,
-          (SELECT ARRAY_AGG(STRUCT(hostname, host_kwh) ORDER BY host_kwh DESC) FROM pc_by_host) AS pc_host_stats,
+          (SELECT AS STRUCT main_pc_total_kwh, sub_pc_total_kwh FROM pc_by_host) AS pc_host_totals,
+          (SELECT ARRAY_AGG(STRUCT(hostname, inferred_total_kwh)) FROM inferred_by_host) AS inferred_pc_host_stats,
           (SELECT ARRAY_AGG(STRUCT(date_jst, daily_household_kwh, daily_pc_kwh, daily_active_kwh) ORDER BY date_jst ASC) FROM daily_summary) AS daily_stats,
           (SELECT ARRAY_AGG(STRUCT(hour_jst, hourly_household_kwh, hourly_pc_kwh, hourly_active_kwh) ORDER BY hour_jst ASC) FROM hourly_summary) AS hourly_stats
         FROM
@@ -310,17 +352,29 @@ class FinOpsService:
         corr_active = data.get("correlation_pc_vs_active")
         corr_house = data.get("correlation_pc_vs_household")
 
-        # PCはホスト名別に動的集計する（マシンの増減や改名でも壊れないようにするため）
+        # PC消費電力はSwitchBot Plug Miniの実測(env_metrics)を正として集計する。
+        # ホストは固定2台（メインPC/サブPC）。CPU+GPU推論値(power_metrics)は
+        # 実測に対する捕捉率を示す参考値として併記する。
+        pc_host_totals = data.get("pc_host_totals")
+        inferred_by_host = {
+            row["hostname"]: (row["inferred_total_kwh"] or 0.0)
+            for row in (data.get("inferred_pc_host_stats") or [])
+        }
+        host_defs = [
+            ("DESKTOP-BS4B404", "メインPC", _struct_value(pc_host_totals, "main_pc_total_kwh")),
+            ("boinc-server", "サブPC", _struct_value(pc_host_totals, "sub_pc_total_kwh")),
+        ]
+
         pc_host_stats_str = ""
-        for host in (data.get("pc_host_stats") or []):
-            host_kwh = host["host_kwh"] or 0.0
-            share = host_kwh / total_pc_kwh * 100 if total_pc_kwh > 0 else 0
+        for hostname, label, real_kwh in host_defs:
+            share = real_kwh / total_pc_kwh * 100 if total_pc_kwh > 0 else 0
+            inferred_kwh = inferred_by_host.get(hostname, 0.0)
+            coverage_str = f"{inferred_kwh / real_kwh * 100:.0f}%" if real_kwh > 0 else "N/A"
             pc_host_stats_str += (
-                f"  - {host['hostname']}: {host_kwh:.2f} kWh "
-                f"(推定電気代: {host_kwh * unit_price:,.0f} 円、PC合計の {share:.1f}%)\n"
+                f"  - {label}（{hostname}）: 実測(PlugMini) {real_kwh:.2f} kWh "
+                f"(推定電気代: {real_kwh * unit_price:,.0f} 円、PC合計の {share:.1f}%)"
+                f" ／ CPU+GPU推論値 {inferred_kwh:.2f} kWh（実測に対する捕捉率 {coverage_str}）\n"
             )
-        if not pc_host_stats_str:
-            pc_host_stats_str = "  - (ホスト別の内訳データなし)\n"
 
         daily_stats_str = ""
         for day in (data.get("daily_stats") or []):
@@ -340,6 +394,7 @@ class FinOpsService:
 ### 集計データ（直近 {days} 日間）
 - 家庭全体消費電力量: {total_house_kwh:.2f} kWh (推定電気代: {cost_house:,.0f} 円)
 - PC全体の総消費電力量: {total_pc_kwh:.2f} kWh (推定電気代: {cost_pc:,.0f} 円、全体の {total_pc_kwh/total_house_kwh*100 if total_house_kwh > 0 else 0:.1f}%)
+  ※SwitchBot Plug Miniによる壁での実測値（env_metrics）を正の値として使用。参考として、CPU+GPUのみの推論値（power_metrics。マザボ・メモリ・ドライブ・ファン・NIC・PSU変換損失は含まない）が実測の何%を捕捉できているかも併記する。
 {pc_host_stats_str}
 - 推定ベースロード（冷蔵庫・待機電力など。15%値ベースの推計値）: {total_baseload_kwh:.2f} kWh (推定電気代: {cost_baseload:,.0f} 円)
 - 推定空調・アクティブ家電消費電力（ベースロード超過分）: {total_active_kwh:.2f} kWh (推定電気代: {cost_active:,.0f} 円)
@@ -357,7 +412,8 @@ class FinOpsService:
 ### レポートの要件：
 1. **エグゼクティブサマリー**:
    - 今週の総電気料金の内訳を、「意図的な固定コスト（BOINCの24時間稼働、季節上必要な空調）」と「改善余地のあるコスト」に切り分けて総括してください。
-   - PCについては合計値だけでなく、提示されたホスト名別の内訳（各マシンのkWhと電気代）も必ず表に含めてください。どのマシンがBOINC稼働のコストをどれだけ占めているかを可視化することが目的です。
+   - PCについては合計値だけでなく、提示されたホスト名別の内訳（各マシンの実測kWhと電気代）も必ず表に含めてください。どのマシンがBOINC稼働のコストをどれだけ占めているかを可視化することが目的です。
+   - あわせて、CPU+GPU推論値が実測の何%しか捕捉できていないかにも触れ、差分（マザボ・メモリ・ドライブ・ファン・NIC・PSU変換損失など）がPC消費電力の相応の割合を占めていることを指摘してください。
 2. **PCと空調の相関分析**:
    - 相関係数の値をもとに、PCの負荷（および排熱）がエアコンの消費電力に与えた影響を統計的・論理的に解説してください。
    - 相関係数が高い（例えば0.4以上）場合はPC排熱によるエアコン負荷への影響を指摘し、低い場合は別の主要因（時間帯や人間の活動など）が支配的であることを指摘してください。

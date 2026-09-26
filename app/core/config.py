@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     FINOPS_BQ_DATASET: str
     ENEOS_BQ_TABLE: str
     PC_POWER_BQ_TABLE: str
+    PC_ENV_METRICS_BQ_TABLE: str = "env_metrics"
     DISCORD_FINOPS_CHANNEL_ID: str
     GEMINI_API_KEY: str
     ELECTRICITY_UNIT_PRICE: float = 35.0
