@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 
 from google import genai
 from google.cloud import bigquery, storage
+from table2ascii import Alignment, PresetStyle
+from table2ascii import table2ascii as t2a
 
 from app.core.config import settings
 from app.services.discord_service import discord_service
@@ -23,6 +25,71 @@ def _struct_value(struct, key: str, default: float = 0.0) -> float:
     except (KeyError, TypeError):
         return default
     return default if value is None else value
+
+
+def _yen(value: float) -> str:
+    return f"{value:,.0f}"
+
+
+def _build_cost_tables(
+    *,
+    total_house_kwh: float,
+    cost_house: float,
+    total_pc_kwh: float,
+    cost_pc: float,
+    total_baseload_kwh: float,
+    cost_baseload: float,
+    total_active_kwh: float,
+    cost_active: float,
+    host_rows: list[tuple[str, float, float]],
+    unit_price: float,
+) -> str:
+    """
+    Discordはmarkdownの表(`| |`)を描画できないため、table2asciiでコードブロックの
+    アスキー表を組み立てる。Geminiには表を作らせず、この関数の出力をそのまま前に付ける。
+    """
+
+    def share(value: float) -> str:
+        return f"{value / total_house_kwh * 100:.1f}%" if total_house_kwh > 0 else "N/A"
+
+    overview_table = t2a(
+        header=["項目", "kWh", "電気代(円)", "家庭全体比"],
+        body=[
+            ["家庭全体", f"{total_house_kwh:.2f}", _yen(cost_house), "100.0%"],
+            ["PC合計(実測)", f"{total_pc_kwh:.2f}", _yen(cost_pc), share(total_pc_kwh)],
+            ["ベースロード(推定)", f"{total_baseload_kwh:.2f}", _yen(cost_baseload), share(total_baseload_kwh)],
+            ["アクティブ家電(推定)", f"{total_active_kwh:.2f}", _yen(cost_active), share(total_active_kwh)],
+        ],
+        alignments=[Alignment.LEFT, Alignment.RIGHT, Alignment.RIGHT, Alignment.RIGHT],
+        style=PresetStyle.thin_box,
+    )
+
+    host_body = []
+    for label, real_kwh, inferred_kwh in host_rows:
+        pc_share = f"{real_kwh / total_pc_kwh * 100:.1f}%" if total_pc_kwh > 0 else "N/A"
+        coverage = f"{inferred_kwh / real_kwh * 100:.0f}%" if real_kwh > 0 else "N/A"
+        host_body.append([
+            label,
+            f"{real_kwh:.2f}",
+            _yen(real_kwh * unit_price),
+            pc_share,
+            f"{inferred_kwh:.2f}",
+            coverage,
+        ])
+
+    host_table = t2a(
+        header=["PC", "実測kWh", "電気代(円)", "PC内比率", "推論kWh", "捕捉率"],
+        body=host_body,
+        alignments=[Alignment.LEFT, Alignment.RIGHT, Alignment.RIGHT, Alignment.RIGHT, Alignment.RIGHT, Alignment.RIGHT],
+        style=PresetStyle.thin_box,
+    )
+
+    return (
+        "### 💰 コスト内訳サマリー\n"
+        f"```\n{overview_table}\n```\n"
+        "### 💻 PCホスト別内訳（実測 vs CPU+GPU推論）\n"
+        f"```\n{host_table}\n```"
+    )
 
 
 class FinOpsService:
@@ -376,6 +443,22 @@ class FinOpsService:
                 f" ／ CPU+GPU推論値 {inferred_kwh:.2f} kWh（実測に対する捕捉率 {coverage_str}）\n"
             )
 
+        cost_tables = _build_cost_tables(
+            total_house_kwh=total_house_kwh,
+            cost_house=cost_house,
+            total_pc_kwh=total_pc_kwh,
+            cost_pc=cost_pc,
+            total_baseload_kwh=total_baseload_kwh,
+            cost_baseload=cost_baseload,
+            total_active_kwh=total_active_kwh,
+            cost_active=cost_active,
+            host_rows=[
+                (label, real_kwh, inferred_by_host.get(hostname, 0.0))
+                for hostname, label, real_kwh in host_defs
+            ],
+            unit_price=unit_price,
+        )
+
         daily_stats_str = ""
         for day in (data.get("daily_stats") or []):
             daily_stats_str += f"- {day['date_jst']}: 家庭全体 {day['daily_household_kwh']:.2f} kWh, PC {day['daily_pc_kwh']:.2f} kWh, 空調/アクティブ {day['daily_active_kwh']:.2f} kWh\n"
@@ -410,9 +493,10 @@ class FinOpsService:
 {hourly_stats_str}
 
 ### レポートの要件：
-1. **エグゼクティブサマリー**:
+0. **コスト内訳・ホスト別内訳の数値表はこちらのコード側で別途アスキー表として組み立てて先頭に表示済みです。あなたはこのデータの表を一切作らないでください**（Discordはmarkdownの表を描画できないため）。以下のセクションは、表の下に続く文章として書いてください。
+1. **エグゼクティブサマリー**（表は使わず2〜3文の文章で）:
    - 今週の総電気料金の内訳を、「意図的な固定コスト（BOINCの24時間稼働、季節上必要な空調）」と「改善余地のあるコスト」に切り分けて総括してください。
-   - PCについては合計値だけでなく、提示されたホスト名別の内訳（各マシンの実測kWhと電気代）も必ず表に含めてください。どのマシンがBOINC稼働のコストをどれだけ占めているかを可視化することが目的です。
+   - どのマシンがBOINC稼働のコストをどれだけ占めているか（上に表示したホスト別の実測kWh・電気代）に文章で触れてください。
    - あわせて、CPU+GPU推論値が実測の何%しか捕捉できていないかにも触れ、差分（マザボ・メモリ・ドライブ・ファン・NIC・PSU変換損失など）がPC消費電力の相応の割合を占めていることを指摘してください。
 2. **PCと空調の相関分析**:
    - 相関係数の値をもとに、PCの負荷（および排熱）がエアコンの消費電力に与えた影響を統計的・論理的に解説してください。
@@ -428,15 +512,16 @@ class FinOpsService:
    - 代わりに、同じ稼働時間・同じ快適さを維持したまま消費電力を下げる施策（PCの電力効率チューニング、空調の設定・気流・断熱の最適化、料金プランや時間帯シフトの見直しなど）を提案してください。
 
 ### フォーマットガイドライン：
-- Discord上に投稿するのに適した、見出し、箇条書き、表、絵文字（💡, 💻, ❄️, 💸, 📈など）を効果的に使った視覚的に美しいマークダウン形式にしてください。
+- **Discordはmarkdownの表（`| ヘッダー | ... |`形式）を描画できません。表(テーブル)は一切使わないでください。** 数値の一覧は見出し・箇条書き・太字を使った文章で表現してください。
+- Discord上に投稿するのに適した、見出し、箇条書き、絵文字（💡, 💻, ❄️, 💸, 📈など）を効果的に使った視覚的に美しいマークダウン形式にしてください。
 - 読者がすぐに理解でき、モチベーションが高まるトーン（事実に基づきつつ建設的で親しみやすいトーン）にしてください。
-- 分量は以下の構造を厳守してください（Discordでは2000文字ごとに自動分割されるため、全体で3800文字を超えないこと）。
+- 分量は以下の構造を厳守してください（Discordでは2000文字ごとに自動分割されるため、全体で3000文字を超えないこと）。
   - 前置き・自己紹介・締めの挨拶は書かず、いきなり本題（セクション1）から始める。
-  - セクション1（サマリー）: コスト内訳の表1つ ＋ 補足2文以内。
+  - セクション1（サマリー）: 表を使わず3文以内の文章で。
   - セクション2（相関分析）: 相関係数の提示 ＋ 解説3文以内。
   - セクション3（パターン分析）: 箇条書き4項目以内、各項目2文以内。
   - セクション4（アクションプラン）: 4個以内。各プランは「施策」「根拠」「期待削減額」の3行のみで書き、それ以上の説明を足さない。
-  - アクションプランの再掲表や、末尾の合計表・総括文は作らない（同じ数値を2度提示しない）。
+  - アクションプランの再掲や、末尾の総括文は作らない（同じ数値を2度提示しない）。
 - 冗長な修飾・比喩・励ましの言い回しを削り、数値と根拠を優先してください。
 """
 
@@ -444,7 +529,7 @@ class FinOpsService:
             model="gemini-3.6-flash",
             contents=prompt,
         )
-        return response.text
+        return f"{cost_tables}\n\n{response.text.strip()}"
 
     async def perform_weekly_audit(self, days: int = 7) -> str:
         """
@@ -468,8 +553,12 @@ class FinOpsService:
             else:
                 parts = []
                 current_part = ""
+                in_code_block = False
                 for line in report.split("\n"):
-                    if len(current_part) + len(line) + 1 > 1950:
+                    if line.strip().startswith("```"):
+                        in_code_block = not in_code_block
+                    # コードブロック(表)の途中ではフェンスが壊れるため分割しない
+                    if not in_code_block and len(current_part) + len(line) + 1 > 1950:
                         parts.append(current_part)
                         current_part = line
                     else:

@@ -7,5 +7,6 @@ httpx
 pydantic-settings
 pynacl
 requests
+table2ascii
 uvicorn
 google-genai
